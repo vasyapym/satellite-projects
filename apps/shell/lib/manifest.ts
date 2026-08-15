@@ -21,7 +21,7 @@ export const projects: ProjectEntry[] = [
     slug: "bigbang",
     title: "Big Bang",
     description:
-      "A GPU-accelerated WebGL2 particle simulation of the Big Bang: singularity, inflation, expansion, cooling, and structure formation.",
+      "A GPU-accelerated WebGL2 particle simulation of the Big Bang.",
     tags: ["TypeScript", "React", "WebGL2", "GLSL", "GPU Particles", "Transform Feedback"],
     status: "live",
     link: { kind: "internal", href: "/projects/bigbang" },
