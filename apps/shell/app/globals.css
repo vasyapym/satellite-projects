@@ -1,0 +1,97 @@
+/* ===== Design token contract =====================================
+   The stable, minimal surface satellites are allowed to depend on.
+   Satellites style themselves using ONLY these variables, so they
+   inherit the shell's look without coupling to shell components. */
+:root {
+  --color-bg: #0b0d12;
+  --color-surface: #14171f;
+  --color-surface-2: #1c2029;
+  --color-border: #2a2f3a;
+  --color-text: #e6e9ef;
+  --color-text-muted: #9aa3b2;
+  --color-accent: #6ea8fe;
+  --color-accent-contrast: #0b0d12;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --maxw: 960px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  line-height: 1.55;
+}
+
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ===== Shell-owned styling (satellites never touch these) ===== */
+.container { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--space-6); }
+
+.site-header {
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-4) 0;
+}
+.site-header .container {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4);
+}
+.site-header .brand { font-weight: 700; color: var(--color-text); font-size: 1.1rem; }
+.site-header nav { display: flex; gap: var(--space-4); }
+
+.hero { padding: var(--space-12) 0 var(--space-8); }
+.hero h1 { font-size: 2rem; margin: 0 0 var(--space-3); }
+.hero p { color: var(--color-text-muted); max-width: 52ch; margin: 0; }
+
+.project-grid {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  padding: var(--space-8) 0 var(--space-12);
+}
+
+.project-card {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-6);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.project-card:hover { border-color: var(--color-accent); transform: translateY(-2px); }
+.project-card--muted { opacity: 0.6; }
+.project-card h3 { margin: 0; font-size: 1.1rem; }
+.project-card p { margin: 0; color: var(--color-text-muted); font-size: 0.95rem; }
+.project-card .tags { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: auto; }
+.project-card .tag {
+  font-size: 0.72rem; font-family: var(--font-mono);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border); border-radius: 999px;
+  color: var(--color-text-muted);
+}
+.project-card .status {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--color-accent);
+}
+
+.site-footer {
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-8) 0; margin-top: var(--space-12);
+  color: var(--color-text-muted); font-size: 0.85rem;
+}

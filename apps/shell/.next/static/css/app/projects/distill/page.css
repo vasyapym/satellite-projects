@@ -1,0 +1,42 @@
+/*!***********************************************************************************************************************************************************************************************************************************************************************************!*\
+  !*** css ./node_modules/next/dist/build/webpack/loaders/css-loader/src/index.js??ruleSet[1].rules[14].oneOf[5].use[2]!./node_modules/next/dist/build/webpack/loaders/postcss-loader/src/index.js??ruleSet[1].rules[14].oneOf[5].use[3]!./app/projects/distill/distill.module.css ***!
+  \***********************************************************************************************************************************************************************************************************************************************************************************/
+/* Styles use ONLY the shell's token contract (globals.css) — no shell internals. */
+.distill_wrap__VJnjn { padding: var(--space-8) 0 var(--space-12); display: grid; grid-gap: var(--space-6); gap: var(--space-6); }
+.distill_back___GNWM { font-size: 0.85rem; color: var(--color-text-muted); }
+.distill_header__fUOjS h1 { margin: 0 0 var(--space-2); font-size: 1.6rem; }
+.distill_header__fUOjS p { margin: 0; color: var(--color-text-muted); max-width: 70ch; }
+
+.distill_grid__ezm_B { display: grid; grid-gap: var(--space-4); gap: var(--space-4); grid-template-columns: 1fr 1fr; }
+@media (max-width: 760px) { .distill_grid__ezm_B { grid-template-columns: 1fr; } }
+
+.distill_pane__iSTHz { display: grid; grid-gap: var(--space-3); gap: var(--space-3); grid-template-rows: auto 1fr; min-width: 0; }
+.distill_controls__Ji1lR { display: flex; gap: var(--space-2); align-items: center; justify-content: space-between; }
+
+.distill_select__n_qDx {
+  background: var(--color-surface-2); color: var(--color-text);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3); font-family: var(--font-mono); font-size: 0.8rem;
+}
+
+.distill_editor__QWNC6, .distill_output__FERhW {
+  width: 100%; min-height: 440px; box-sizing: border-box;
+  background: var(--color-surface); color: var(--color-text);
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  padding: var(--space-4); font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.5;
+}
+.distill_editor__QWNC6 { resize: vertical; }
+.distill_editor__QWNC6:focus { outline: none; border-color: var(--color-accent); }
+
+.distill_output__FERhW { margin: 0; overflow: auto; white-space: pre; }
+.distill_error__jNY5Y { color: #ff9d9d; border-color: #5a2a2a; }
+
+.distill_meta__yQsEg { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-text-muted); }
+.distill_copy__xcsnB {
+  background: var(--color-accent); color: var(--color-accent-contrast);
+  border: none; border-radius: var(--radius-sm); cursor: pointer;
+  padding: var(--space-2) var(--space-3); font-size: 0.8rem; font-weight: 600;
+}
+.distill_copy__xcsnB:disabled { opacity: 0.4; cursor: default; }
+

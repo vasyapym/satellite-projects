@@ -1,0 +1,38 @@
+/* Styles use ONLY the shell's token contract (globals.css) — no shell internals. */
+.wrap { padding: var(--space-8) 0 var(--space-12); display: grid; gap: var(--space-6); }
+.back { font-size: 0.85rem; color: var(--color-text-muted); }
+.header h1 { margin: 0 0 var(--space-2); font-size: 1.6rem; }
+.header p { margin: 0; color: var(--color-text-muted); max-width: 70ch; }
+
+.grid { display: grid; gap: var(--space-4); grid-template-columns: 1fr 1fr; }
+@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+
+.pane { display: grid; gap: var(--space-3); grid-template-rows: auto 1fr; min-width: 0; }
+.controls { display: flex; gap: var(--space-2); align-items: center; justify-content: space-between; }
+
+.select {
+  background: var(--color-surface-2); color: var(--color-text);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3); font-family: var(--font-mono); font-size: 0.8rem;
+}
+
+.editor, .output {
+  width: 100%; min-height: 440px; box-sizing: border-box;
+  background: var(--color-surface); color: var(--color-text);
+  border: 1px solid var(--color-border); border-radius: var(--radius);
+  padding: var(--space-4); font-family: var(--font-mono);
+  font-size: 0.82rem; line-height: 1.5;
+}
+.editor { resize: vertical; }
+.editor:focus { outline: none; border-color: var(--color-accent); }
+
+.output { margin: 0; overflow: auto; white-space: pre; }
+.error { color: #ff9d9d; border-color: #5a2a2a; }
+
+.meta { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-text-muted); }
+.copy {
+  background: var(--color-accent); color: var(--color-accent-contrast);
+  border: none; border-radius: var(--radius-sm); cursor: pointer;
+  padding: var(--space-2) var(--space-3); font-size: 0.8rem; font-weight: 600;
+}
+.copy:disabled { opacity: 0.4; cursor: default; }
