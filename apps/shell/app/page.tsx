@@ -5,9 +5,9 @@ export default function HomePage() {
   return (
     <div className="container">
       <section className="hero">
-        <h1>Portfolio &amp; playground</h1>
+        <h1>Playground</h1>
         <p>
-          A small, stable shell that hosts self-contained pet projects.
+          A small, stable shell that hosts self-contained projects.
         </p>
       </section>
 
