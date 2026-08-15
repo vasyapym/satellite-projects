@@ -17,4 +17,14 @@ export const projects: ProjectEntry[] = [
     link: { kind: "internal", href: "/projects/distill" },
     year: 2026,
   },
+  {
+    slug: "bigbang",
+    title: "Big Bang",
+    description:
+      "A GPU-accelerated WebGL2 particle simulation of the Big Bang: singularity, inflation, expansion, cooling, and structure formation.",
+    tags: ["TypeScript", "React", "WebGL2", "GLSL", "GPU Particles", "Transform Feedback"],
+    status: "live",
+    link: { kind: "internal", href: "/projects/bigbang" },
+    year: 2026,
+  },
 ];
