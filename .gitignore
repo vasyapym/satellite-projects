@@ -1,5 +1,11 @@
-node_modules/
+# Next.js build output
+.next/
+**/.next/
+
+# Dependencies
 **/node_modules/
+
+# Other common ignores
 .DS_Store
 .env
 *.log
