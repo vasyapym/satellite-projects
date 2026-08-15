@@ -1,5 +1,6 @@
-```markdown
-Project playground. One stable **shell** renders a
+## Project playground
+
+One stable **shell** renders a
 landing page of project cards; each card links to a self-contained **satellite**
 that can live inside the shell today and move to its own service tomorrow —
 without changing the shell's code.
@@ -84,7 +85,6 @@ All commands run from `apps/shell/`.
 ## License
 
 MIT
-```
 # Contributing
 
 The main contribution path is adding or improving a satellite. The shell itself
@@ -94,7 +94,6 @@ contract.
 ## Add a satellite
 
 cd apps/shell
-```
 
 1. **Append a manifest entry** in `lib/manifest.ts`.
    The `ProjectEntry` type will tell you what's required — follow the compiler.
