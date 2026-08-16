@@ -20,7 +20,6 @@ export type Visibility = "public" | "protected" | "private" | "internal" | "unkn
  * All line ranges are inclusive and 1-based.
  */
 export type CodeRegionKind = "source" | "procedural";
-
 export type CodeRegionLanguage = "php" | "javascript" | "markup" | string;
 
 export interface CodeRegion {
@@ -90,10 +89,15 @@ export interface Summary {
   notes: string[];
 }
 
-// Named output modes, richest → leanest:
+// Named output modes, richest → leanest.
 //
-//   full       — bounded, selected source bodies/regions + rich semantic inventory
-//   detail     — rich semantic inventory + compact source sketches; no full bodies
+// full and detail share one semantic-reconstruction pipeline and one output
+// shape; detail is a strict deepening of full (larger evidence caps/budget),
+// never a structurally different mode. Declarations always live once in the
+// semantic sections; ## code carries only implementation evidence.
+//
+//   full       — compact semantic reconstruction + minimal high-value source evidence
+//   detail     — full's reconstruction plus deeper, more targeted implementation evidence
 //   signatures — semantic signatures + behavior + compact state; no source
 //   outline    — compact public semantic inventory + terse behavior
 //   names      — names + reference graph only

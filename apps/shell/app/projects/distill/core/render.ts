@@ -23,10 +23,7 @@ const KIND_TAG: Record<string, string> = {
   other: "sym",
 };
 
-export type PrimaryRepr =
-  | "bodies"
-  | "signature"
-  | "name";
+export type PrimaryRepr = "signature" | "name";
 
 export interface FidelityPlan {
   primary: PrimaryRepr;
@@ -36,29 +33,31 @@ export interface FidelityPlan {
   behaviorLevel: 0 | 1 | 2;
   showState: boolean;
   stateCap: number;
-
-  // Source selection is intentionally separate from semantic fidelity.
-  // `full` emits selected bodies/regions verbatim.
-  // `detail` emits sketches of selected bodies/regions.
   sourceCandidateCap: number;
-  sketchLineCap: number;
+  sourceBudgetRatio: number;
+  // Per-candidate maximum number of evidence lines. Owned by the plan for
+  // every mode so the renderer never special-cases a mode inline.
+  evidenceLineCap: number;
 }
 
 export function planFidelity(
   mode: SummaryMode,
 ): FidelityPlan {
   switch (mode) {
+    // detail is a strict deepening of full: strictly larger candidate cap,
+    // evidence-line cap, and source budget, same output structure.
     case "detail":
       return {
         primary: "signature",
         behaviorLevel: 2,
         includePrivate: true,
         importNames: true,
-        sigMaxLen: 200,
+        sigMaxLen: 180,
         showState: true,
-        stateCap: 12,
+        stateCap: 10,
         sourceCandidateCap: 8,
-        sketchLineCap: 7,
+        sourceBudgetRatio: 0.24,
+        evidenceLineCap: 8,
       };
 
     case "signatures":
@@ -67,11 +66,12 @@ export function planFidelity(
         behaviorLevel: 2,
         includePrivate: true,
         importNames: true,
-        sigMaxLen: 200,
+        sigMaxLen: 180,
         showState: true,
-        stateCap: 12,
+        stateCap: 10,
         sourceCandidateCap: 0,
-        sketchLineCap: 0,
+        sourceBudgetRatio: 0,
+        evidenceLineCap: 0,
       };
 
     case "outline":
@@ -84,7 +84,8 @@ export function planFidelity(
         showState: false,
         stateCap: 8,
         sourceCandidateCap: 0,
-        sketchLineCap: 0,
+        sourceBudgetRatio: 0,
+        evidenceLineCap: 0,
       };
 
     case "names":
@@ -97,21 +98,26 @@ export function planFidelity(
         showState: false,
         stateCap: 0,
         sourceCandidateCap: 0,
-        sketchLineCap: 0,
+        sourceBudgetRatio: 0,
+        evidenceLineCap: 0,
       };
 
+    // full is a compact semantic reconstruction: the semantic sections carry
+    // every declaration once, and ## code holds only a few high-signal
+    // implementation lines the semantic model cannot express.
     case "full":
     default:
       return {
-        primary: "bodies",
+        primary: "signature",
         behaviorLevel: 2,
         includePrivate: true,
         importNames: true,
-        sigMaxLen: 200,
+        sigMaxLen: 180,
         showState: true,
-        stateCap: 12,
-        sourceCandidateCap: 6,
-        sketchLineCap: 0,
+        stateCap: 10,
+        sourceCandidateCap: 5,
+        sourceBudgetRatio: 0.14,
+        evidenceLineCap: 4,
       };
   }
 }
@@ -124,24 +130,49 @@ const VIS_MARK: Record<string, string> = {
   unknown: " ",
 };
 
-const BODY_ROOT_KINDS = new Set<CodeSymbol["kind"]>([
+/**
+ * Only implementation-bearing symbols are eligible as source evidence.
+ *
+ * Declaration-shaped symbols (interfaces, enums, classes, structs, traits)
+ * are fully represented once in ## api/## internal via their signature and
+ * behavior line; reproducing their bodies here would only duplicate the
+ * semantic sections. Imperative logic — control flow, guards, invariants,
+ * side effects — lives in functions/methods and in editable/procedural
+ * regions, which is exactly what ## code should carry.
+ */
+const EVIDENCE_SYMBOL_KINDS = new Set<CodeSymbol["kind"]>([
+  "function",
+  "method",
+]);
+
+/**
+ * Kinds whose *entire* source range is already reconstructed in a semantic
+ * section (## api/## internal/## state) and must therefore never be repeated
+ * as source evidence. This is the exact complement of the body-bearing kinds:
+ * a declaration is fully described by its signature + behavior line, so its
+ * source lines are "already spoken for."
+ */
+const DECLARATION_KINDS = new Set<CodeSymbol["kind"]>([
+  "constant",
+  "variable",
+  "interface",
+  "type",
+  "enum",
+]);
+
+/**
+ * Kinds that carry an executable body we *do* want as evidence, but whose
+ * header/signature is already printed in the semantic sections. For these we
+ * subtract only the header lines (declaration → opening brace), so parameter
+ * lines stop echoing the signature while the body remains available.
+ */
+const HEADER_ONLY_KINDS = new Set<CodeSymbol["kind"]>([
   "function",
   "method",
   "class",
   "struct",
-  "interface",
   "trait",
-  "enum",
 ]);
-
-function overlaps(
-  aStart: number,
-  aEnd: number,
-  bStart: number,
-  bEnd: number,
-): boolean {
-  return aStart <= bEnd && bStart <= aEnd;
-}
 
 interface SourceCandidate {
   kind: "symbol" | "region";
@@ -154,20 +185,32 @@ interface SourceCandidate {
 }
 
 const IMPORTANT_SOURCE_TERMS =
-  /\b(?:ajax|basket|request|XMLHttpRequest|fetch|IncludeComponent|IncludeComponentTemplate|IncludeFile|includeModule|GetList|query|select|insert|update|delete|BX\.|onCustomEvent)\b/i;
+  /\b(?:ajax|request|XMLHttpRequest|fetch|IncludeComponent|IncludeComponentTemplate|IncludeFile|includeModule|GetList|query|select|insert|update|delete|BX\.|onCustomEvent|set_params|set_resolution|step|render|resize|reset)\b/i;
 
 const CONTROL_FLOW_TERMS =
-  /\b(?:if|elseif|else|switch|match|for|foreach|while|do|try|catch|finally|return|throw)\b/i;
+  /\b(?:if|else|elseif|switch|case|match|for|foreach|while|do|try|catch|finally|return|throw|await)\b/i;
+
+// Invariant / side-effect shapes the semantic model cannot express and that
+// ## code exists to preserve. Phrased as generic pattern classes (not any one
+// file's identifiers) so the scorer generalizes and survives the deletion test.
+const GUARD_TERMS =
+  /\b(?:Number\.isFinite|Number\.isNaN|isFinite|isNaN|Infinity|NaN)\b/;
+const CLAMP_TERMS = /\bMath\.(?:min|max|abs|floor|ceil|round|hypot)\b/;
+// Comparisons/uses of upper/lower-bound constants (MAX_*, MIN_*, *_MAX, *_CAP,
+// *_LIMIT, *_DIMENSION, *_DT …) — the shape of per-frame caps and clamps.
+const CAP_CONST_TERMS =
+  /\b(?:(?:MAX|MIN)_[A-Z0-9_]+|[A-Z][A-Z0-9]*_(?:MAX|MIN|CAP|LIMIT|DIMENSION|DT|SIZE|COUNT))\b/;
+const DRAIN_TERMS =
+  /\b(?:shift|unshift|splice|drain|flush|dequeue|enqueue|queue|accumulat\w*|pending)\b/i;
+
+const NOISE_ONLY = /^(?:\s*[{}();,]?\s*)$/;
 
 function candidateSource(
   candidate: SourceCandidate,
   srcLines: string[],
 ): string {
   return srcLines
-    .slice(
-      candidate.line - 1,
-      candidate.endLine,
-    )
+    .slice(candidate.line - 1, candidate.endLine)
     .join("\n");
 }
 
@@ -175,183 +218,69 @@ function candidateScore(
   candidate: SourceCandidate,
   srcLines: string[],
 ): number {
-  const text = candidateSource(
-    candidate,
-    srcLines,
-  );
+  const text = candidateSource(candidate, srcLines);
+  const span = Math.max(1, candidate.endLine - candidate.line + 1);
 
-  const span =
-    Math.max(
-      1,
-      candidate.endLine -
-        candidate.line +
-        1,
-    );
+  let score = candidate.kind === "symbol" ? 22 : 8;
 
-  let score =
-    candidate.kind === "symbol"
-      ? 24
-      : 10;
-
-  // Named callables are more informative than anonymous source gaps.
   if (
     candidate.symbol &&
-    (
-      candidate.symbol.kind === "function" ||
-      candidate.symbol.kind === "method"
-    )
+    (candidate.symbol.kind === "function" || candidate.symbol.kind === "method")
   ) {
-    score += 16;
+    score += 18;
   }
 
-  // Containers are useful, but should lose to actual routines when otherwise
-  // comparable, since dumping a giant class/file body is low-density.
-  if (
-    candidate.symbol &&
-    (
-      candidate.symbol.kind === "class" ||
-      candidate.symbol.kind === "interface" ||
-      candidate.symbol.kind === "struct" ||
-      candidate.symbol.kind === "trait" ||
-      candidate.symbol.kind === "enum"
-    )
-  ) {
-    score += 6;
+  score += Math.min(12, Math.ceil(span / 12));
+  score += Math.min(30, (text.match(CONTROL_FLOW_TERMS)?.length ?? 0) * 6);
+  score += Math.min(36, (text.match(IMPORTANT_SOURCE_TERMS)?.length ?? 0) * 9);
+
+  if (GUARD_TERMS.test(text)) score += 10;
+  if (CLAMP_TERMS.test(text)) score += 8;
+  if (CAP_CONST_TERMS.test(text)) score += 8;
+  if (DRAIN_TERMS.test(text)) score += 6;
+
+  if (/\b(?:const|let|var)\b[^=\n]+=[\[{]/.test(text)) score += 5;
+  if (/\b(?:async|await|try|catch|throw)\b/.test(text)) score += 5;
+  if (candidate.symbol?.behavior?.mutatesState) score += 8;
+  if (candidate.symbol?.behavior?.calls.length) {
+    score += Math.min(14, candidate.symbol.behavior.calls.length * 2);
   }
 
-  score += Math.min(
-    18,
-    Math.ceil(span / 8),
-  );
-
-  const controlHits =
-    text.match(
-      CONTROL_FLOW_TERMS,
-    )?.length ?? 0;
-
-  score += Math.min(
-    30,
-    controlHits * 6,
-  );
-
-  const importantHits =
-    text.match(
-      IMPORTANT_SOURCE_TERMS,
-    )?.length ?? 0;
-
-  score += Math.min(
-    30,
-    importantHits * 8,
-  );
-
-  if (
-    /(?:\b(?:const|let|var)\b[^=\n]+=\s*[\[{])/.test(
-      text,
-    )
-  ) {
-    score += 5;
-  }
-
-  if (
-    /\b(?:async|await|try|catch|throw)\b/.test(
-      text,
-    )
-  ) {
-    score += 6;
-  }
-
-  if (
-    candidate.symbol?.behavior
-      ?.mutatesState
-  ) {
-    score += 8;
-  }
-
-  if (
-    candidate.symbol?.behavior
-      ?.calls.length
-  ) {
-    score += Math.min(
-      16,
-      candidate.symbol.behavior.calls.length * 2,
-    );
-  }
-
-  // Very large homogeneous PHP spans are exactly the kind of source that
-  // inflates the original output without adding proportionate information.
-  if (
-    candidate.language === "php" &&
-    span > 80 &&
-    controlHits === 0 &&
-    importantHits === 0
-  ) {
-    score -= 60;
-  }
-
+  if (span > 80 && candidate.language === "php") score -= 24;
   return score;
 }
 
-function sameLanguageOverlap(
-  a: SourceCandidate,
-  b: SourceCandidate,
-): boolean {
+function sameLanguageOverlap(a: SourceCandidate, b: SourceCandidate): boolean {
   return (
     a.language === b.language &&
-    overlaps(
-      a.line,
-      a.endLine,
-      b.line,
-      b.endLine,
-    )
+    a.line <= b.endLine &&
+    b.line <= a.endLine
   );
 }
 
-function normalizeCandidates(
-  candidates: SourceCandidate[],
-): SourceCandidate[] {
+function normalizeCandidates(candidates: SourceCandidate[]): SourceCandidate[] {
   const ordered = [...candidates].sort(
     (a, b) =>
       b.score - a.score ||
-      (b.endLine - b.line) -
-        (a.endLine - a.line) ||
-      a.line - b.line,
+      a.line - b.line ||
+      b.endLine - b.line - (a.endLine - a.line),
   );
 
   const kept: SourceCandidate[] = [];
 
   for (const candidate of ordered) {
-    const duplicate = kept.some(
-      (existing) =>
-        sameLanguageOverlap(
-          existing,
-          candidate,
-        ) &&
-        (
-          (
-            candidate.line >=
-              existing.line &&
-            candidate.endLine <=
-              existing.endLine
-          ) ||
-          (
-            existing.line >=
-              candidate.line &&
-            existing.endLine <=
-              candidate.endLine
-          )
-        ),
-    );
+    const duplicate = kept.some((existing) => {
+      if (!sameLanguageOverlap(existing, candidate)) return false;
+      return (
+        (candidate.line >= existing.line && candidate.endLine <= existing.endLine) ||
+        (existing.line >= candidate.line && existing.endLine <= candidate.endLine)
+      );
+    });
 
-    if (!duplicate) {
-      kept.push(candidate);
-    }
+    if (!duplicate) kept.push(candidate);
   }
 
-  return kept.sort(
-    (a, b) =>
-      a.line - b.line ||
-      b.score - a.score,
-  );
+  return kept;
 }
 
 function selectSourceCandidates(
@@ -359,171 +288,220 @@ function selectSourceCandidates(
   srcLines: string[],
   cap: number,
 ): SourceCandidate[] {
-  if (!cap || !candidates.length) {
-    return [];
-  }
+  if (!cap || !candidates.length) return [];
 
   const scored = candidates
     .map((candidate) => ({
       ...candidate,
-      score: candidateScore(
-        candidate,
-        srcLines,
-      ),
+      score: candidateScore(candidate, srcLines),
     }))
-    .filter(
-      (candidate) =>
-        candidate.score > 0,
-    );
+    .filter((candidate) => candidate.score > 0);
 
-  const deduped =
-    normalizeCandidates(scored);
-
-  return deduped
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.line - b.line,
-    )
+  return normalizeCandidates(scored)
+    .sort((a, b) => b.score - a.score || a.line - b.line)
     .slice(0, cap)
-    .sort(
-      (a, b) =>
-        a.line - b.line,
-    );
+    .sort((a, b) => a.line - b.line);
 }
 
-function lineSignal(
-  line: string,
-): number {
+function lineSignal(line: string): number {
   let score = 0;
-
-  if (CONTROL_FLOW_TERMS.test(line)) {
-    score += 7;
-  }
-
-  if (
-    IMPORTANT_SOURCE_TERMS.test(line)
-  ) {
-    score += 8;
-  }
-
-  if (
-    /\b(?:const|let|var)\b/.test(line)
-  ) {
-    score += 2;
-  }
-
-if (/(?:=|return|throw)\b/.test(line)) {
-  score += 1;
-}
-
-  if (
-    /(?:https?:\/\/|\/ajax\/|["'][^"']{10,}["'])/.test(
-      line,
-    )
-  ) {
-    score += 3;
-  }
-
+  if (CONTROL_FLOW_TERMS.test(line)) score += 8;
+  if (IMPORTANT_SOURCE_TERMS.test(line)) score += 10;
+  if (GUARD_TERMS.test(line)) score += 12;
+  if (CLAMP_TERMS.test(line)) score += 9;
+  if (CAP_CONST_TERMS.test(line)) score += 9;
+  if (DRAIN_TERMS.test(line)) score += 7;
+  if (/\b(?:const|let|var)\b/.test(line)) score += 3;
+  if (/\b(?:=|return|throw)\b/.test(line)) score += 2;
+  if (/(?:https?:\/\/|\/ajax\/|["'][^"']{10,}["'])/.test(line)) score += 4;
   return score;
 }
 
-function sketchLines(
+/**
+ * Readability-preserving normalization.
+ *
+ * We deliberately do NOT glue operators, arrows, brackets, or commas together:
+ * the size win must come from selecting fewer, higher-signal lines and from not
+ * duplicating declarations, not from destroying whitespace. The only cleanup is
+ * trimming trailing whitespace and clamping deep leading indentation to a small,
+ * consistent amount so nested source does not blow out line width.
+ */
+const INDENT_CLAMP = 4;
+
+function compactLine(line: string): string {
+  const withoutTrailing = line.replace(/\s+$/, "");
+  const leadingLen = (withoutTrailing.match(/^\s*/)?.[0] ?? "").length;
+  const indent = Math.min(leadingLen, INDENT_CLAMP);
+  return " ".repeat(indent) + withoutTrailing.trimStart();
+}
+
+/**
+ * The header span of a body-bearing symbol: from its declaration line up to
+ * and including the line that opens its body ("{"). Bounded to a few lines so
+ * we only ever subtract the signature/parameter frame, never the body. If no
+ * opening brace is found in range, fall back to the single declaration line.
+ */
+function headerEndLine(symbol: CodeSymbol, srcLines: string[]): number {
+  const limit = Math.min(symbol.line + 8, srcLines.length);
+  for (let ln = symbol.line; ln <= limit; ln++) {
+    if (srcLines[ln - 1]?.includes("{")) return ln;
+  }
+  return symbol.line;
+}
+
+/**
+ * The set of 1-based source lines already reconstructed by the semantic
+ * sections. ## code must never repeat these — declarations are printed once as
+ * signatures/state, and a body's signature is printed once in ## api. Both the
+ * symbol and region evidence paths subtract this set, so the declaration filter
+ * is a single invariant applied at two granularities rather than one filter
+ * that exists (symbols) and one that is missing (regions).
+ */
+function collectRepresentedLines(
+  symbols: CodeSymbol[],
+  srcLines: string[],
+): Set<number> {
+  const represented = new Set<number>();
+
+  for (const s of symbols) {
+    if (DECLARATION_KINDS.has(s.kind)) {
+      for (let ln = s.line; ln <= s.endLine && ln <= srcLines.length; ln++) {
+        represented.add(ln);
+      }
+    } else if (HEADER_ONLY_KINDS.has(s.kind)) {
+      const end = headerEndLine(s, srcLines);
+      for (let ln = s.line; ln <= end && ln <= srcLines.length; ln++) {
+        represented.add(ln);
+      }
+    }
+  }
+
+  return represented;
+}
+
+/**
+ * Does a candidate still contain any line worth showing once the
+ * already-represented lines and pure noise are removed? A region composed
+ * entirely of declarations (a constant block, an interface body) collapses to
+ * false here and is dropped — the region-path equivalent of the symbol-kind
+ * gate, so declarations can never leak through regions.
+ */
+function hasResidualSignal(
+  candidate: SourceCandidate,
+  srcLines: string[],
+  excluded: Set<number>,
+): boolean {
+  const to = Math.min(candidate.endLine, srcLines.length);
+  for (let ln = candidate.line; ln <= to; ln++) {
+    if (excluded.has(ln)) continue;
+    const text = compactLine(srcLines[ln - 1]);
+    if (!text || NOISE_ONLY.test(text)) continue;
+    return true;
+  }
+  return false;
+}
+
+function compactSourceLines(
   srcLines: string[],
   from: number,
   to: number,
-  cap: number,
-): Array<
-  number | "ellipsis"
-> {
-  const entries: Array<{
-    line: number;
-    score: number;
-  }> = [];
+  maxLines: number,
+  excluded: Set<number>,
+): string[] {
+  const entries: Array<{ line: number; text: string; score: number }> = [];
 
-  for (
-    let line = from;
-    line <= to &&
-    line <= srcLines.length;
-    line++
-  ) {
-    if (!srcLines[line - 1].trim()) {
-      continue;
+  for (let line = from; line <= to && line <= srcLines.length; line++) {
+    if (excluded.has(line)) continue;
+    const text = compactLine(srcLines[line - 1]);
+    if (!text || NOISE_ONLY.test(text)) continue;
+    entries.push({ line, text, score: lineSignal(text) });
+  }
+
+  if (!entries.length) return [];
+
+  const pick = new Set<number>();
+  const add = (entry: { line: number }) => pick.add(entry.line);
+  const byScore = (
+    a: { line: number; score: number },
+    b: { line: number; score: number },
+  ) => b.score - a.score || a.line - b.line;
+
+  if (entries.length <= maxLines) {
+    entries.forEach(add);
+  } else if (entries.length <= maxLines * 2) {
+    // Small span: its opening and closing frame are genuinely informative, so
+    // keep the frame and fill the remaining slots by signal.
+    entries.slice(0, 2).forEach(add);
+    add(entries[entries.length - 1]);
+
+    for (const entry of entries.slice(2, -1).sort(byScore)) {
+      if (pick.size >= maxLines) break;
+      add(entry);
     }
+  } else {
+    // Large span (e.g. a 300-line function body): the frame carries no signal
+    // — the signature is already in ## api and the closing "};" is noise — so
+    // spend every slot on the highest-signal lines (guards, clamps, drains,
+    // invariants) instead of open-params and a closing brace.
+    for (const entry of [...entries].sort(byScore)) {
+      if (pick.size >= maxLines) break;
+      add(entry);
+    }
+  }
 
-    entries.push({
-      line,
-      score: lineSignal(
-        srcLines[line - 1],
-      ),
+  return [...pick]
+    .sort((a, b) => a - b)
+    .map((line) => {
+      const entry = entries.find((e) => e.line === line)!;
+      return `${line}:${entry.text}`;
     });
-  }
+}
 
-  if (!entries.length) {
-    return [];
-  }
-
-  if (entries.length <= cap) {
-    return entries.map(
-      (e) => e.line,
-    );
-  }
-
-  const selected = new Set<number>();
-
-  // Always preserve the opening context.
-  for (
-    const e of entries.slice(0, 2)
-  ) {
-    selected.add(e.line);
-  }
-
-  // Always preserve closure/result context.
-  selected.add(
-    entries[entries.length - 1].line,
+function sourceEvidence(
+  srcLines: string[],
+  candidate: SourceCandidate,
+  lineCap: number,
+  excluded: Set<number>,
+): string[] {
+  const compact = compactSourceLines(
+    srcLines,
+    candidate.line,
+    candidate.endLine,
+    Math.max(1, lineCap),
+    excluded,
   );
 
-  const middle = entries
-    .slice(2, -1)
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.line - b.line,
-    );
+  if (!compact.length) return [];
 
-  for (const e of middle) {
-    if (selected.size >= cap) {
-      break;
-    }
+  const label = candidate.symbol
+    ? `${KIND_TAG[candidate.symbol.kind] ?? "sym"} ${candidate.symbol.name}`
+    : candidate.region?.kind === "procedural"
+      ? `proc ${candidate.region.language}`
+      : `region ${candidate.language}`;
 
-    selected.add(e.line);
+  // Both full and detail present ## code as curated evidence, never as a body
+  // dump, so the marker is uniform.
+  return [
+    `  evidence ${label} @${candidate.line}-${candidate.endLine} {`,
+    ...compact.map((line) => `    ${line}`),
+    "  }",
+  ];
+}
+
+function truncateToBudget(lines: string[], budget: number): string[] {
+  if (budget <= 0) return [];
+
+  const kept: string[] = [];
+  let used = 0;
+
+  for (const line of lines) {
+    const size = line.length + 1;
+    if (used + size > budget) break;
+    kept.push(line);
+    used += size;
   }
 
-  const ordered = [...selected].sort(
-    (a, b) => a - b,
-  );
-
-  const out: Array<
-    number | "ellipsis"
-  > = [];
-
-  for (
-    let i = 0;
-    i < ordered.length;
-    i++
-  ) {
-    if (
-      i > 0 &&
-      ordered[i] >
-        ordered[i - 1] + 1
-    ) {
-      out.push("ellipsis");
-    }
-
-    out.push(ordered[i]);
-  }
-
-  return out;
+  return kept;
 }
 
 export function render(
@@ -542,37 +520,13 @@ export function render(
   } = summary;
 
   const plan = planFidelity(mode);
-  const nameOf = new Map(
-    symbols.map((s) => [s.id, s.name]),
-  );
+  const nameOf = new Map(symbols.map((s) => [s.id, s.name]));
   const srcLines = source.split("\n");
-
-  const semanticSymbols =
-    symbols.filter(
-      (s) => s.kind !== "variable",
-    );
-
-  const roots = semanticSymbols.filter(
-    (s) => !s.parentId,
-  );
-
-// Only document/module-scope variables are state. Locals inside functions or
-// callbacks are implementation detail and must not inflate the summary.
-const variables = symbols.filter(
-  (s) =>
-    s.kind === "variable" &&
-    !s.parentId,
-);
-
-  const childrenOf = (id: string) =>
-    semanticSymbols.filter(
-      (s) => s.parentId === id,
-    );
-
-  const arrow: Record<
-    RefEdge["kind"],
-    string
-  > = {
+  const semanticSymbols = symbols.filter((s) => s.kind !== "variable");
+  const roots = semanticSymbols.filter((s) => !s.parentId);
+  const variables = symbols.filter((s) => s.kind === "variable" && !s.parentId);
+  const childrenOf = (id: string) => semanticSymbols.filter((s) => s.parentId === id);
+  const arrow: Record<RefEdge["kind"], string> = {
     calls: "->",
     references: "~>",
     extends: "<|",
@@ -580,218 +534,83 @@ const variables = symbols.filter(
   };
 
   const withheld: string[] = [];
-
   const head = [
-    `# ${language} (${confidence})  symbols:${semanticSymbols.length} state:${variables.length} deps:${dependencies.length} mode:${mode}`,
+    `# ${language} (${confidence}) symbols:${semanticSymbols.length} state:${variables.length} deps:${dependencies.length} mode:${mode}`,
   ];
 
   const depLines = dependencies.length
     ? [
         "## deps",
         ...dependencies.map((d) =>
-          plan.importNames &&
-          d.names?.length
-            ? `  ${d.module}: ${d.names.join(", ")}`
+          plan.importNames && d.names?.length
+            ? `  ${d.module}:${d.names.join(",")}`
             : `  ${d.module}`,
         ),
       ]
     : [];
 
-  if (
-    dependencies.some(
-      (d) => d.names?.length,
-    ) &&
-    !plan.importNames
-  ) {
-    withheld.push(
-      "imported-name detail",
-    );
+  if (dependencies.some((d) => d.names?.length) && !plan.importNames) {
+    withheld.push("imported names");
   }
 
-  const isPrivate = (
-    s: CodeSymbol,
-  ) =>
-    s.visibility === "private" ||
-    s.visibility === "internal";
+  const isPrivate = (s: CodeSymbol) =>
+    s.visibility === "private" || s.visibility === "internal";
 
-  const publicRoots = roots.filter(
-    (s) => !isPrivate(s),
-  );
-
-  const privateRoots = roots.filter(
-    isPrivate,
-  );
+  const publicRoots = roots.filter((s) => !isPrivate(s));
+  const privateRoots = roots.filter(isPrivate);
 
   const truncSig = (sig: string) =>
-    sig.length > plan.sigMaxLen
-      ? sig.slice(
-          0,
-          plan.sigMaxLen - 1,
-        ) + "…"
-      : sig;
+    sig.length > plan.sigMaxLen ? `${sig.slice(0, plan.sigMaxLen - 1)}…` : sig;
 
-  const numbered = (
-    from: number,
-    to: number,
-    indent: string,
-  ): string[] => {
-    const out: string[] = [];
-    const width = String(
-      Math.min(
-        to,
-        srcLines.length,
-      ),
-    ).length;
-
-    for (
-      let L = from;
-      L <= to &&
-      L <= srcLines.length;
-      L++
-    ) {
-      out.push(
-        `${indent}${String(L).padStart(width)}| ${srcLines[L - 1]}`,
-      );
-    }
-
-    return out;
-  };
-
-  const displaySignature = (
-    s: CodeSymbol,
-  ): string => {
-    if (
-      s.kind !== "constant" &&
-      s.kind !== "variable"
-    ) {
-      return truncSig(s.signature);
-    }
-
-    return truncSig(
-      s.signature.replace(
-        /^\s*(?:const|let|var)\s+/,
-        "",
-      ),
-    );
-  };
-
-  const emitSym = (
-    s: CodeSymbol,
-    out: string[],
-    indent: string,
-  ) => {
-    const mark =
-      VIS_MARK[s.visibility] ?? " ";
-
-    const tag =
-      KIND_TAG[s.kind] ?? "sym";
-
-const label =
-  plan.primary === "name"
-    ? s.name
-    : (
-        s.kind === "constant" ||
-        s.kind === "variable"
-      )
-      ? displaySignature(s)
-      : truncSig(s.signature);
-
-    const languageSuffix =
-      mode === "full" &&
-      s.language !== language &&
-      s.kind !== "variable"
-        ? ` [${s.language}]`
-        : "";
-
-    out.push(
-      `${indent}${mark}${tag} ${label}${languageSuffix}  @${s.line}`,
+  const displaySignature = (s: CodeSymbol) =>
+    truncSig(
+      s.kind === "constant" || s.kind === "variable"
+        ? s.signature.replace(/^\s*(?:const|let|var)\s+/, "")
+        : s.signature,
     );
 
-    if (
-      plan.behaviorLevel > 0 &&
-      s.behavior
-    ) {
-      const bl = behaviorLine(
-        s.behavior,
-        plan.behaviorLevel,
-      );
+  const emitSym = (s: CodeSymbol, out: string[], indent: string) => {
+    const mark = VIS_MARK[s.visibility] ?? " ";
+    const tag = KIND_TAG[s.kind] ?? "sym";
+    const label = plan.primary === "name" ? s.name : displaySignature(s);
 
-      if (bl) {
-        out.push(
-          `${indent}    · ${bl}`,
-        );
-      }
+    out.push(`${indent}${mark}${tag} ${label}@${s.line}`);
+
+    if (plan.behaviorLevel > 0 && s.behavior) {
+      const behavior = behaviorLine(s.behavior, plan.behaviorLevel);
+      if (behavior) out.push(`${indent}  ·${behavior}`);
     }
 
     for (const child of childrenOf(s.id)) {
-      emitSym(
-        child,
-        out,
-        indent + "    ",
-      );
+      emitSym(child, out, `${indent}  `);
     }
   };
 
-  const apiLines: string[] = ["## api"];
-
-  for (const s of publicRoots) {
-    emitSym(
-      s,
-      apiLines,
-      "  ",
-    );
-  }
+  const apiLines = ["## api"];
+  for (const s of publicRoots) emitSym(s, apiLines, "  ");
 
   const internalLines: string[] = [];
-
-  if (
-    plan.includePrivate &&
-    privateRoots.length
-  ) {
-    internalLines.push(
-      "## internal",
-    );
-
-    for (const s of privateRoots) {
-      emitSym(
-        s,
-        internalLines,
-        "  ",
-      );
-    }
+  if (plan.includePrivate && privateRoots.length) {
+    internalLines.push("## internal");
+    for (const s of privateRoots) emitSym(s, internalLines, "  ");
   } else if (privateRoots.length) {
-    withheld.push(
-      "private/internal symbols",
-    );
+    withheld.push("private/internal symbols");
   }
 
-  const bodyRoots = roots.filter(
-    (s) =>
-      BODY_ROOT_KINDS.has(s.kind) &&
-      s.endLine > s.line,
-  );
+  const renderableRegions = regions
+    .filter((r) => r.id.startsWith("editable") && r.language !== "markup")
+    .sort((a, b) => a.line - b.line);
 
-  // `segmentSource()` regions are structural metadata. They are NOT themselves
-  // render candidates, otherwise a whole PHP/Bitrix source region gets dumped
-  // before the derived meaningful gaps are considered.
-  //
-  // `deriveEditableRegions()` uses `editable*` IDs for the actual uncovered
-  // executable spans that may be rendered.
-  const renderableRegions =
-    regions
-      .filter(
-        (r) =>
-          r.id.startsWith("editable") &&
-          r.language !== "markup",
-      )
-      .sort(
-        (a, b) =>
-          a.line - b.line,
-      );
+  // Lines already reconstructed once in the semantic sections. Both evidence
+  // paths (symbols and regions) subtract these, so declarations — constants,
+  // interfaces, enums, and signature/parameter frames — can never be repeated
+  // in ## code regardless of how a file was carved.
+  const representedLines = collectRepresentedLines(symbols, srcLines);
 
-  const sourceCandidates: SourceCandidate[] =
-    [
-      ...bodyRoots.map((symbol) => ({
+  const sourceCandidates: SourceCandidate[] = [
+    ...roots
+      .filter((s) => EVIDENCE_SYMBOL_KINDS.has(s.kind) && s.endLine > s.line)
+      .map((symbol) => ({
         kind: "symbol" as const,
         line: symbol.line,
         endLine: symbol.endLine,
@@ -799,286 +618,93 @@ const label =
         score: 0,
         symbol,
       })),
-      ...renderableRegions.map((region) => ({
-        kind: "region" as const,
-        line: region.line,
-        endLine: region.endLine,
-        language: region.language,
-        score: 0,
-        region,
-      })),
-    ];
+    ...renderableRegions.map((region) => ({
+      kind: "region" as const,
+      line: region.line,
+      endLine: region.endLine,
+      language: region.language,
+      score: 0,
+      region,
+    })),
+    // A candidate whose lines are entirely declarations/noise once the
+    // already-represented set is removed carries no implementation evidence and
+    // is dropped before it can consume a candidate slot.
+  ].filter((candidate) =>
+    hasResidualSignal(candidate, srcLines, representedLines),
+  );
 
-  const selectedCandidates =
-    selectSourceCandidates(
-      sourceCandidates,
-      srcLines,
-      plan.sourceCandidateCap,
+  const selectedCandidates = selectSourceCandidates(
+    sourceCandidates,
+    srcLines,
+    plan.sourceCandidateCap,
+  );
+
+  const sourceLines: string[] = [];
+  if (plan.sourceCandidateCap > 0 && plan.sourceBudgetRatio > 0) {
+    const evidence = selectedCandidates.flatMap((candidate) =>
+      sourceEvidence(srcLines, candidate, plan.evidenceLineCap, representedLines),
     );
 
-  const codeLines: string[] = [];
+    const sourceBudget = Math.floor(source.length * plan.sourceBudgetRatio);
+    const keptEvidence = truncateToBudget(evidence, sourceBudget);
 
-  if (
-    mode === "full" ||
-    mode === "detail"
-  ) {
-    if (selectedCandidates.length) {
-      codeLines.push("## code");
-
-      for (
-        const candidate of
-          selectedCandidates
-      ) {
-        if (
-          mode === "full" &&
-          candidate.kind === "symbol" &&
-          candidate.symbol
-        ) {
-          const s = candidate.symbol;
-
-          codeLines.push(
-            `  ${KIND_TAG[s.kind] ?? "sym"} ${s.name} [${s.language}]  @${s.line}-${s.endLine}`,
-          );
-
-          codeLines.push(
-            ...numbered(
-              s.line,
-              s.endLine,
-              "  ",
-            ),
-          );
-
-          codeLines.push("");
-          continue;
-        }
-
-        if (
-          mode === "full" &&
-          candidate.kind === "region" &&
-          candidate.region
-        ) {
-          const r =
-            candidate.region;
-
-          const label =
-            r.kind === "procedural"
-              ? "procedural"
-              : "region";
-
-          codeLines.push(
-            `  ${label} ${r.language}  @${r.line}-${r.endLine}`,
-          );
-
-          codeLines.push(
-            ...numbered(
-              r.line,
-              r.endLine,
-              "  ",
-            ),
-          );
-
-          codeLines.push("");
-          continue;
-        }
-
-        if (
-          mode === "detail"
-        ) {
-          const label =
-            candidate.symbol
-              ? `${KIND_TAG[candidate.symbol.kind] ?? "sym"} ${candidate.symbol.name}`
-              : candidate.region?.kind ===
-                "procedural"
-                ? `procedural ${candidate.region.language}`
-                : `region ${candidate.language}`;
-
-          codeLines.push(
-            `  sketch ${label}  @${candidate.line}-${candidate.endLine}`,
-          );
-
-          const sketch =
-            sketchLines(
-              srcLines,
-              candidate.line,
-              candidate.endLine,
-              plan.sketchLineCap,
-            );
-
-          for (
-            const item of sketch
-          ) {
-            if (
-              item === "ellipsis"
-            ) {
-              codeLines.push(
-                "    …",
-              );
-              continue;
-            }
-
-            const width =
-              String(
-                Math.min(
-                  candidate.endLine,
-                  srcLines.length,
-                ),
-              ).length;
-
-            codeLines.push(
-              `    ${String(item).padStart(width)}| ${srcLines[item - 1]}`,
-            );
-          }
-
-          codeLines.push("");
-        }
-      }
-
-      while (
-        codeLines.length &&
-        codeLines[
-          codeLines.length - 1
-        ] === ""
-      ) {
-        codeLines.pop();
-      }
-    } else {
-      withheld.push(
-        "no high-value source spans selected",
-      );
+    if (keptEvidence.length) {
+      sourceLines.push("## code", ...keptEvidence);
+    } else if (selectedCandidates.length) {
+      withheld.push("source evidence budget exhausted");
     }
 
-    const omitted =
-      sourceCandidates.length -
-      selectedCandidates.length;
-
-    if (omitted > 0) {
-      withheld.push(
-        `${omitted} lower-priority source span(s)`,
-      );
-    }
-  } else if (
-    sourceCandidates.length
-  ) {
-    withheld.push(
-      "editable source bodies/regions",
-    );
+    const omitted = sourceCandidates.length - selectedCandidates.length;
+    if (omitted > 0) withheld.push(`${omitted} lower-priority source span(s)`);
+  } else if (sourceCandidates.length) {
+    withheld.push("editable source bodies/regions");
   }
 
   const stateLines: string[] = [];
-
-  if (
-    plan.showState &&
-    variables.length
-  ) {
-    const shown = variables.slice(
-      0,
-      plan.stateCap,
-    );
-
-    stateLines.push("## state");
-
-    for (const v of shown) {
-      stateLines.push(
-        `  ${truncSig(v.signature)}  @${v.line}`,
-      );
-    }
-
-    if (
-      variables.length >
-      shown.length
-    ) {
-      withheld.push(
-        `${variables.length - shown.length} more state capture(s)`,
-      );
+  if (plan.showState && variables.length) {
+    const shown = variables.slice(0, plan.stateCap);
+    stateLines.push("## state", ...shown.map((v) => `  ${truncSig(v.signature)}@${v.line}`));
+    if (variables.length > shown.length) {
+      withheld.push(`${variables.length - shown.length} more state capture(s)`);
     }
   } else if (variables.length) {
-    withheld.push(
-      "state captures",
-    );
+    withheld.push("state captures");
   }
 
-  const refLines: string[] = [];
-
-  if (edges.length) {
-    refLines.push("## refs");
-
-    for (const e of edges) {
-      refLines.push(
-        `  ${nameOf.get(e.from)} ${arrow[e.kind]} ${nameOf.get(e.to)}`,
-      );
-    }
-  }
-
-  const allNotes = [...notes];
-
-  if (
-    mode === "detail"
-  ) {
-    allNotes.push(
-      'mode detail: selected source bodies/regions are represented as compact sketches; full source is reserved for mode "full"',
-    );
-  } else if (
-    mode === "signatures"
-  ) {
-    allNotes.push(
-      'mode signatures: editable source bodies/regions withheld; use mode "detail" or "full" for source context',
-    );
-  } else if (
-    plan.primary === "name"
-  ) {
-    allNotes.push(
-      `mode ${mode}: signatures, state, behavior, and editable source withheld; reference graph only`,
-    );
-  }
-
-  if (
-    plan.behaviorLevel < 2
-  ) {
-    allNotes.push(
-      `mode ${mode}: behavioral layer is partial — use a richer mode for fuller source-visible behavior`,
-    );
-  }
-
-  if (
-    mode !== "full" &&
-    renderableRegions.length
-  ) {
-    allNotes.push(
-      `mode ${mode}: ${renderableRegions.length} editable source region(s) withheld`,
-    );
-  }
-
-  if (withheld.length) {
-    allNotes.push(
-      `mode ${mode}: withheld ${withheld.join(", ")}`,
-    );
-  }
-
-  const noteLines = allNotes.length
-    ? [
-        "## notes",
-        ...allNotes.map(
-          (n) => `  ! ${n}`,
-        ),
-      ]
+  const refLines = edges.length
+    ? ["## refs", ...edges.map((e) => `  ${nameOf.get(e.from) ?? e.from}${arrow[e.kind]}${nameOf.get(e.to) ?? e.to}`)]
     : [];
 
-  const blocks = [
+  const allNotes = [...notes];
+  if (mode === "detail") {
+    allNotes.push("detail: semantic inventory + scored source evidence; no verbatim bodies");
+  } else if (mode === "signatures") {
+    allNotes.push("signatures: source evidence withheld");
+  } else if (mode === "names") {
+    allNotes.push("names: signatures, state, behavior, and source withheld");
+  }
+
+  if (withheld.length) allNotes.push(`withheld: ${withheld.join("; ")}`);
+
+  const noteLines = allNotes.length
+    ? ["## notes", ...allNotes.map((n) => `  !${n}`)]
+    : [];
+
+  let output = [
     head,
     apiLines,
     depLines,
     internalLines,
-    codeLines,
+    sourceLines,
     stateLines,
     refLines,
     noteLines,
-  ];
+  ]
+    .filter((block) => block.length)
+    .map((block) => block.join("\n"))
+    .join("\n")
+    .trim();
 
-  return (
-    blocks
-      .filter((b) => b.length)
-      .map((b) => b.join("\n"))
-      .join("\n")
-      .trim() + "\n"
-  );
+  if (output) output += "\n";
+  return output;
 }
