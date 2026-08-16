@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:wasm": "cd app/projects/bigbang_rust/wasm && wasm-pack build --release --target web --out-dir pkg && cp pkg/bigbang_rust_bg.wasm ../../../../public/bigbang_rust/bigbang_rust_bg.wasm"
   },
   "dependencies": {
     "next": "^15.4.0",

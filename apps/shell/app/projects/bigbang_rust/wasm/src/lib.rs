@@ -22,6 +22,11 @@ pub fn get_memory() -> JsValue {
 /// [ x, y, z, density(0..1), speed(0..~) ] in DISPLAY space (already scaled).
 const STRIDE: usize = 5;
 
+/// The Rust integrator supports at most 64 MAX_SUBSTEP-sized substeps per
+/// public call. Keep the API input bounded to that same amount so a large
+/// finite `dt_sim` cannot turn into one oversized unstable physics step.
+const MAX_CALL_DT: f64 = MAX_SUBSTEP * 64.0;
+
 #[wasm_bindgen]
 pub struct Simulation {
     bg: Background,
@@ -35,6 +40,12 @@ pub struct Simulation {
 impl Simulation {
     #[wasm_bindgen(constructor)]
     pub fn new(preset: u32, seed: u32) -> Simulation {
+        // Install once at first construction. Even with `panic = "abort"`,
+        // the hook runs before the abort, so any future panic prints its real
+        // message + file:line to the browser console instead of a bare
+        // "RuntimeError: Unreachable code should not be executed".
+        console_error_panic_hook::set_once();
+
         let count = preset_count(preset);
         let bg = Background::new(Cosmology::default());
         let p = Particles::seeded(count, seed as u64);
@@ -66,16 +77,26 @@ impl Simulation {
         self.bg.cosmo = Cosmology { omega_r, omega_m, omega_k, omega_lambda, h0 };
     }
 
-    /// Advance by `dt_sim` simulation-time units, subdivided into bounded
-    /// substeps so large UI time-scales never destabilize the integrator.
+    /// Advance by `dt_sim` simulation-time units.
+    ///
+    /// Invalid deltas are ignored at the WASM boundary. Valid deltas are
+    /// capped to the work budget of 64 bounded substeps so callers cannot
+    /// accidentally request an integrator step larger than its stability
+    /// envelope.
     pub fn step(&mut self, dt_sim: f64) {
-        if dt_sim <= 0.0 { return; }
-        let steps = (dt_sim / MAX_SUBSTEP).ceil().max(1.0) as usize;
+        if !dt_sim.is_finite() || dt_sim <= 0.0 {
+            return;
+        }
+
+        let dt_sim = dt_sim.min(MAX_CALL_DT);
+        let steps = (dt_sim / MAX_SUBSTEP).ceil() as usize;
         let dt = dt_sim / steps as f64;
-        for _ in 0..steps.min(64) {
+
+        for _ in 0..steps {
             self.bg.advance(dt);
             gravity::leapfrog_step(&mut self.p, self.bg.a, self.bg.h, dt);
         }
+
         self.refresh_render();
     }
 
@@ -118,6 +139,55 @@ impl Simulation {
         let l = c.omega_lambda;
         if r >= m && r >= l { 0 } else if m >= l { 1 } else { 2 }
     }
+
+    #[cfg(test)]
+    fn simulation_state(&self) -> (f64, f64) {
+        (self.bg.a, self.bg.t)
+    }
 }
 
 fn _phase_marker(_: Phase) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_ignores_non_finite_and_non_positive_dt() {
+        let mut sim = Simulation::new(0, 1);
+        let before = sim.simulation_state();
+
+        sim.step(f64::NAN);
+        assert_eq!(sim.simulation_state(), before);
+
+        sim.step(f64::INFINITY);
+        assert_eq!(sim.simulation_state(), before);
+
+        sim.step(f64::NEG_INFINITY);
+        assert_eq!(sim.simulation_state(), before);
+
+        sim.step(0.0);
+        assert_eq!(sim.simulation_state(), before);
+
+        sim.step(-1.0);
+        assert_eq!(sim.simulation_state(), before);
+    }
+
+        #[test]
+    fn stepping_from_a_min_keeps_state_finite() {
+        // Reproduces the browser scenario: fresh sim at A_MIN, many frames.
+        let mut sim = Simulation::new(0, 1);
+        for _ in 0..300 {
+            sim.step(0.0025); // matches timeScale 0.05 * dt ~0.05
+        }
+        for &v in &sim.render {
+            assert!(v.is_finite(), "render buffer went non-finite");
+        }
+    }
+
+    #[test]
+    fn call_dt_budget_matches_integrator_budget() {
+        assert_eq!(MAX_CALL_DT, MAX_SUBSTEP * 64.0);
+        assert_eq!(MAX_CALL_DT, 0.128);
+    }
+}

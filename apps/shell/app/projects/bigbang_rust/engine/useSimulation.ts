@@ -49,6 +49,14 @@ export const dominantName = (d: number) => DOMINANT_NAMES[d] ?? "—";
 const MAX_RENDER_DIMENSION = 4096;
 const MAX_DEVICE_PIXEL_RATIO = 2;
 
+/**
+ * Keep each WASM call within the integrator's bounded 64-substep budget.
+ *
+ * MAX_SUBSTEP in the Rust engine is 2e-3, so 64 substeps = 0.128 simulation
+ * time units per frame at most. The WASM side enforces the same ceiling.
+ */
+const MAX_SIM_DT = 0.128;
+
 export function useSimulation(
   canvasRef: React.RefObject<HTMLCanvasElement | null>,
   stageRef: React.RefObject<HTMLDivElement | null>,
@@ -197,6 +205,7 @@ export function useSimulation(
         let fpsAccum = 0;
         let fpsFrames = 0;
         let fps = 0;
+        let invalidDtWarned = false;
 
         const loop = (now: number) => {
           if (disposed || !engine || !renderer || !controlsObj) return;
@@ -234,7 +243,32 @@ export function useSimulation(
           const s = controls.current;
 
           if (s.running) {
-            engine.sim.step(dt * s.timeScale);
+            const dtSim = dt * s.timeScale;
+
+            /**
+             * Never cross the WASM boundary with NaN, Infinity, or a negative
+             * delta. A malformed numeric control value used to make the Rust
+             * integrator write NaNs into particle state, after which the
+             * Barnes-Hut tree could recurse indefinitely and abort the WASM
+             * instance as an "unreachable" trap.
+             *
+             * Also cap the per-frame simulation advance to the WASM engine's
+             * bounded 64-substep budget rather than relying on Rust to discard
+             * time after the fact.
+             */
+            if (Number.isFinite(dtSim) && dtSim > 0) {
+              engine.sim.step(Math.min(dtSim, MAX_SIM_DT));
+              invalidDtWarned = false;
+            } else if (!invalidDtWarned) {
+              invalidDtWarned = true;
+              if (process.env.NODE_ENV !== "production") {
+                console.warn("[bigbang] skipped invalid simulation dt", {
+                  dt,
+                  timeScale: s.timeScale,
+                  dtSim,
+                });
+              }
+            }
           }
 
           controlsObj.tick(dt);
@@ -311,7 +345,9 @@ export function useSimulation(
     controls,
 
     setTimeScale: (v: number) => {
-      controls.current.timeScale = v;
+      // Keep invalid UI values out of the mutable command state. The render
+      // loop still validates the derived dt immediately before the WASM call.
+      controls.current.timeScale = Number.isFinite(v) ? Math.max(0, v) : 0;
     },
 
     setRunning: (v: boolean) => {
