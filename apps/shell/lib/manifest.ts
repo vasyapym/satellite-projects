@@ -21,10 +21,20 @@ export const projects: ProjectEntry[] = [
     slug: "bigbang",
     title: "Big Bang",
     description:
-      "A GPU-accelerated WebGL2 particle simulation of the Big Bang.",
+      "Particle simulation of the Big Bang.",
     tags: ["TypeScript", "React", "WebGL2", "GLSL", "GPU Particles", "Transform Feedback"],
     status: "live",
     link: { kind: "internal", href: "/projects/bigbang" },
+    year: 2026,
+  },
+  {
+    slug: "bigbang_rust",
+    title: "Big Bang (Rust)",
+    description:
+      "Friedmann expansion, cooling thermal history, and Barnes–Hut N-body structure formation.",
+    tags: ["Rust", "WebAssembly", "WebGPU", "N-body"],
+    status: "live",
+    link: { kind: "internal", href: "/projects/bigbang_rust" },
     year: 2026,
   },
 ];

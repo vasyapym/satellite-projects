@@ -5,6 +5,9 @@
 # Dependencies
 **/node_modules/
 
+# Rust / Cargo build output (bigbang_rust WASM core)
+**/target/
+
 # Other common ignores
 .DS_Store
 .env
