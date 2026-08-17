@@ -26,7 +26,7 @@ export interface Renderer {
 }
 
 export async function createRenderer(canvas: HTMLCanvasElement): Promise<Renderer> {
-  // WebGPU primary, WebGL2 fallback (plan tradeoff: graceful degradation).
+  // WebGPU primary, WebGL2 fallback (graceful degradation).
   if ("gpu" in navigator) {
     try {
       const { createWebGPURenderer } = await import("./webgpu");
@@ -35,6 +35,7 @@ export async function createRenderer(canvas: HTMLCanvasElement): Promise<Rendere
       console.warn("[bigbang] WebGPU init failed, falling back to WebGL2:", e);
     }
   }
+
   const { createWebGL2Renderer } = await import("./webgl2");
   return createWebGL2Renderer(canvas);
 }

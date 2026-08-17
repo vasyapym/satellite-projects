@@ -261,6 +261,7 @@ export function useSimulation(
               invalidDtWarned = false;
             } else if (!invalidDtWarned) {
               invalidDtWarned = true;
+
               if (process.env.NODE_ENV !== "production") {
                 console.warn("[bigbang] skipped invalid simulation dt", {
                   dt,
